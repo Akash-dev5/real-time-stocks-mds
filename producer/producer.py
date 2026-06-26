@@ -48,6 +48,14 @@ def fetch_quote(symbol):
     try:  #"Try running this code. If something fails, jump to the except block."
         response = requests.get(url) #This sends an HTTP GET request.
         response.raise_for_status() #Suppose API returns:(200 ok) No problem, if API returns (401 Unauthorized) or (404 Not Found), Then Python raises an exception and jumps to:(except Exception as e:)
+        
+        # requests.get(url)  →  returns a Response Object (requests.get(url) always returns a Response Object, and you can name the variable holding it whatever you want.)
+        #                     │
+        #                     ├── .text          (the raw HTML/JSON as string)
+        #                     ├── .json()        (parses JSON into a dict)
+        #                     ├── .status_code   (200, 404, 500, etc.)
+        #                     └── .raise_for_status()  ← THIS is what you're using
+        
         data = response.json() #it converts JSON string to python dictionary because Adding fields to a dictionary is easy.
         
         # {
