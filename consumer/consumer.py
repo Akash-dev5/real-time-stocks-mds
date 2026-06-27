@@ -6,7 +6,7 @@ from kafka import KafkaConsumer
 
 #Minio Connection
 s3 = boto3.client(
-    "s3",
+    "s3",  #"s3" is telling boto3 which AWS service you want to connect to.
     endpoint_url="http://localhost:9002",
     aws_access_key_id="admin",
     aws_secret_access_key="password123"
