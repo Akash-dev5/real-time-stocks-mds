@@ -78,7 +78,6 @@ def get_snowflake_conn():
 )
 
 # tags=["bronze", "stocks"]
-# tags=["bronze", "stocks"]
 
 # Tags is a list — so you can add as many tags as you want
 # One tag → ["bronze"]
@@ -98,10 +97,37 @@ def minio_to_snowflake_dag():
         s3 = get_minio_client()   
         bucket = "bronze-transactions"
 
+    # get_minio_client() 
+    # │
+    # │  inside it, boto3.client() creates S3 Client Object
+    # │
+    # └── returns that S3 Client Object
+    #         │
+    #         ▼
+    #     s3 = gets that S3 Client Object
+    #             │
+    #             ├── s3.list_objects_v2()  ✅ #just a LIST OF FILE NAMES (metadata), not the actual file content!
+    #             ├── s3.download_file()    ✅ #downloads actual file to /tmp folder
+    #             ├── s3.put_object()       ✅ 
+    #             └── s3.get_object()       ✅ #gives the actual file data.
+    
+    
         # get all files in bucket
-        response = s3.list_objects_v2(Bucket=bucket)
+        response = s3.list_objects_v2(Bucket=bucket) #list_objects_v2 returns just a LIST OF FILE NAMES (metadata)
         all_files = [obj["Key"] for obj in response.get("Contents", [])]
 
+
+# # boto3 always returns this exact structure
+# # these names are FIXED by AWS/boto3
+# {
+#     "Contents": [           # ← fixed by boto3, you cannot rename this
+#         {
+#             "Key": "AAPL/123.json",   # ← fixed by boto3, you cannot rename this
+#             "Size": 245,              # ← fixed by boto3
+#             "LastModified": "..."     # ← fixed by boto3
+#         }
+#     ]
+# }
 
         #all_files = [obj["Key"] for obj in response.get("Contents", [])]
         #Let me break this into pieces:
@@ -116,7 +142,7 @@ def minio_to_snowflake_dag():
         #     {"Key": "MSFT/789.json", "Size": 198},
         # ]
         
-        # Step 2 — for obj in ...: iterate all data one by on of response.get("Contents", [])]
+        # Step 2 — for obj in ...: iterate all response.get("Contents", [])] one by one on obj
         # Each obj is one file's dictionary:  obj = {"Key": "AAPL/123.json", "Size": 245}
 
         # Step 3 — obj["Key"]: #since only "key" is mentioned, it will only take info from "key" section.
@@ -136,11 +162,41 @@ def minio_to_snowflake_dag():
         # get already processed files (stored in a tracking file in MinIO)
         try:
             processed_obj = s3.get_object(Bucket=bucket, Key="_processed/processed_keys.json")
-            processed_files = json.loads(processed_obj["Body"].read())
+            processed_files = json.loads(processed_obj["Body"].read()) #You can't work with raw JSON string directly in Python
+            
+#             "Body" is just another boto3 fixed key name — like "Contents" and "Key"
+#             When you call s3.get_object() — boto3 returns this dictionary:
+# {
+#     "Body"          : <actual file content lives here>,  # ← the real data
+#     "ContentType"   : "application/json",
+#     "ContentLength" : 245,
+#     "LastModified"  : "...",
+# }
         except Exception:
             processed_files = []  # first run — nothing processed yet
 
-#         Think of _processed/processed_keys.json as a diary file stored in MinIO that keeps track of what's already been processed:
+# Step 1: Code tries to find "_processed/processed_keys.json" in MinIO
+#             │
+#             └── FILE DOESN'T EXIST (you never created it)
+#                     │
+#                     └── s3.get_object() CRASHES
+#                             │
+#                             └── except catches the crash
+#                                     │
+#                                     └── processed_files = []  ← safe fallback
+
+# Then at the END of the pipeline — Task 4 creates it automatically!
+# mark_files_processed() task
+# s3.put_object(
+#     Bucket=bucket,
+#     Key="_processed/processed_keys.json",  # ← CREATES the file here!
+#     Body=json.dumps(processed_files),
+#     ContentType="application/json"
+# )
+
+
+
+# Think of _processed/processed_keys.json as a diary file stored in MinIO that keeps track of what's already been processed:
 # json["AAPL/123.json", "GOOG/456.json"]
 
 # s3.get_object() → reads that diary file from MinIO
@@ -165,11 +221,11 @@ def minio_to_snowflake_dag():
         return new_files
 
     @task
-    def download_files(new_files: list):
+    def download_files(new_files: list):    # ← expects a list!
         """Download only new files to local /tmp folder"""
         if not new_files:
             logger.info("No new files to download")
-            return []
+            return []    # ← returns empty list
 
         os.makedirs(LOCAL_DIR, exist_ok=True)
         s3 = get_minio_client()
@@ -180,11 +236,20 @@ def minio_to_snowflake_dag():
             try:
                 local_file = os.path.join(LOCAL_DIR, os.path.basename(key))
                 s3.download_file(bucket, key, local_file)
+                
+#               s3.download_file(bucket,      key,             local_file)
+#                  ↑            ↑                  ↑
+#             WHICH bucket   file path         WHERE to save
+#             in MinIO       in MinIO          on local machine
+#
+#           "bronze-        "AAPL/123.json"   "/tmp/minio_downloads
+#            transactions"                      /123.json"
+                
                 local_files.append(local_file)
                 logger.info(f"Downloaded {key} -> {local_file}")
             except Exception as e:
                 logger.error(f"Failed to download {key}: {e}")
-                raise  # fail loudly so Airflow retries
+                raise  # fail loudly so Airflow retries  #re-throws the error so Airflow knows to retry the task
 
         return local_files
 
@@ -284,6 +349,28 @@ minio_to_snowflake_dag()
 
 
 
+# Full response dictionary boto3 returns:
+# {
+#     "Name": "bronze-transactions",      # bucket name
+#     "Prefix": "",                        # filter prefix if you used one
+#     "KeyCount": 3,                       # how many files found
+#     "MaxKeys": 1000,                     # max files returned per request
+#     "IsTruncated": False,                # True if there are MORE files
+#     "Contents": [                        # the actual file list
+#         {
+#             "Key": "AAPL/123.json",
+#             "Size": 245,
+#             "LastModified": "...",
+#             "ETag": "...",               # file checksum
+#             "StorageClass": "STANDARD"
+#         }
+#     ]
+# }
+# So you could access any of these:
+# pythonresponse.get("Name")         # → "bronze-transactions"
+# response.get("KeyCount")     # → 3
+# response.get("IsTruncated")  # → False
+# response.get("Contents")     # → list of files  ← what we use
 
 #"Library returns an Object → Object carries methods → Variable holds that Object → Variable can use those methods"
 
