@@ -61,7 +61,7 @@ for message in consumer: #it's iterating through Kafka messages.
     record = message.value
     symbol = record.get("symbol", "unknown")   #.get() is not a Kafka method — it's a built-in Python dictionary method
     ts = record.get("fetched_at",int(time.time()))
-    key = f"{symbol}/{ts}.json"
+    key = f"{symbol}/{ts}.json"   # AAPL/1719394800.json
 
     # message → Kafka Message Object
     # for message in consumer:
@@ -92,7 +92,7 @@ for message in consumer: #it's iterating through Kafka messages.
         Body=json.dumps(record),   #The actual content to save — json.dumps(record) converts the dict to a JSON string
         ContentType="application/json"  #Tells S3 this is a JSON file
     )
-    print(f"Saved record for {symbol} = s3://{bucket_name}/{key}")
+    print(f"Saved record for {symbol} = s3://{bucket_name}/{key}")  #Saved record for AAPL = s3://my-bucket/AAPL/1719394800.json
 
 
 
