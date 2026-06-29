@@ -6,6 +6,7 @@ import snowflake.connector #to talk to Snowflake
 from airflow.sdk import dag, task #modern Airflow decorators you already know
 from airflow.hooks.base import BaseHook #to fetch credentials stored in Airflow UI
 from datetime import datetime, timedelta #for start date and retry delay
+#(datetime) Represents a specific point in time. It's a calendar date and time.
 
 logger = logging.getLogger(__name__) 
 # __name__ is a Python built-in variable that automatically holds the name of the current file
@@ -64,17 +65,26 @@ def get_snowflake_conn():
 #So your thinking was exactly right — password has one dedicated field, but extra Snowflake-specific things needed a separate JSON storage!
 
 
-@dag(
+@dag( #is called a decorator (Without the decorator, it would just be a normal Python function.)
     dag_id="minio_to_snowflake",
-    default_args={
-        "owner": "airflow",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=5),
+    default_args={ #Default settings for all tasks in this DAG.
+        #default_args inside {}? Because default_args itself expects one dictionary.
+        
+        "owner": "airflow",  #Who owns this DAG?   Mostly for documentation.
+        "depends_on_past": False,  #Suppose yesterday's DAG failed. (if True=Today's run waits.), (If False=Today's run starts anyway.)
+        "retries": 2, #if COPY INTO fails, airflow will try 2 more times with interval of 5 mins because (retry_delay = 5 mintues.)
+        #Initial execution + 2 retries = up to 3 total attempts.
+        "retry_delay": timedelta(minutes=5), #(deltatime) Represents a duration (an amount of time).
     },
     start_date=datetime(2025, 9, 9),
     schedule="@hourly",        # every hour, not every minute
     catchup=False,
     tags=["bronze", "stocks"], # helps organize in Airflow UI
+    # Why aren't start_date and schedule inside that dictionary?
+    # Because they are not default task settings.
+    # They're DAG settings.
+    # Think about who uses each setting.
+    # These belong to every task: (TASK 1, TASK2, TASK N)
 )
 
 # tags=["bronze", "stocks"]
@@ -160,10 +170,24 @@ def minio_to_snowflake_dag():
 
 
         # get already processed files (stored in a tracking file in MinIO)
+        #You can't work with raw JSON string directly in Python
+
+# consumer saves JSON string to MinIO. But when boto3 reads ANY file from MinIO it always comes back as raw bytes through the stream — that's just how "Body" works:
+# Consumer saves:
+# "["AAPL/123.json", "GOOG/456.json"]"   ← JSON string saved to MinIO
+
+# boto3 reads it back:
+# b'["AAPL/123.json", "GOOG/456.json"]'  ← comes back as BYTES
+#      ↑
+#      b means bytes
+
+
+
         try:
             processed_obj = s3.get_object(Bucket=bucket, Key="_processed/processed_keys.json")
-            processed_files = json.loads(processed_obj["Body"].read()) #You can't work with raw JSON string directly in Python
-            
+            processed_files = json.loads(processed_obj["Body"].read())
+        except Exception:
+
 #             "Body" is just another boto3 fixed key name — like "Contents" and "Key"
 #             When you call s3.get_object() — boto3 returns this dictionary:
 # {
@@ -235,18 +259,56 @@ def minio_to_snowflake_dag():
         for key in new_files:
             try:
                 local_file = os.path.join(LOCAL_DIR, os.path.basename(key))
+                
+                """os.path.basename()
+                Its job is: Return only the filename from a path.
+                Suppose you have
+                key = "AAPL/1719234567.json"
+                
+                Now: os.path.basename(key)
+                returns
+                1719234567.json    #because it removes everything before the last /.
+                
+                More examples:
+                os.path.basename("AAPL/1719234567.json")
+                ↓
+                1719234567.json
+                
+                os.path.basename("folder1/folder2/file.csv")
+                ↓
+                file.csv
+                
+                os.path.basename("/home/akash/data/report.pdf")
+                ↓
+                report.pdf"""
+
+
+                
+                """os.path.join() 
+                Its job is: Join multiple path parts together correctly.
+                Example:
+                LOCAL_DIR = "/tmp/minio_downloads"
+                filename = "1719234567.json"
+                
+                Now: os.path.join(LOCAL_DIR, filename) 
+                returns
+                /tmp/minio_downloads/1719234567.json
+                It joins them correctly."""
+
+
+                
                 s3.download_file(bucket, key, local_file)
                 
-#               s3.download_file(bucket,      key,             local_file)
-#                  ↑            ↑                  ↑
-#             WHICH bucket   file path         WHERE to save
-#             in MinIO       in MinIO          on local machine
+#  s3.download_file(bucket,          key,          local_file)
+#                      ↑              ↑                    ↑
+#                   WHICH bucket    file path      WHERE to save
+#                   in MinIO        in MinIO       on local machine
 #
-#           "bronze-        "AAPL/123.json"   "/tmp/minio_downloads
-#            transactions"                      /123.json"
+#                  "bronze-      "AAPL/123.json"   "/tmp/minio_downloads/123.json"
+#                 transactions"                             
                 
                 local_files.append(local_file)
-                logger.info(f"Downloaded {key} -> {local_file}")
+                logger.info(f"Downloaded {key} -> {local_file}") #HERE {} doest not means dict, its means take the value of the variable key and insert it into this string."
             except Exception as e:
                 logger.error(f"Failed to download {key}: {e}")
                 raise  # fail loudly so Airflow retries  #re-throws the error so Airflow knows to retry the task
@@ -262,7 +324,9 @@ def minio_to_snowflake_dag():
 
         try:
             conn = get_snowflake_conn()
-            cur = conn.cursor()
+            cur = conn.cursor() 
+            #Without a cursor, we can't execute SQL statements through the database connection.
+            #The cursor is the object that can send SQL statements to Snowflake.
 
             for f in local_files:
                 cur.execute(f"PUT file://{f} @%bronze_stock_quotes_raw AUTO_COMPRESS=TRUE") 
@@ -349,6 +413,174 @@ minio_to_snowflake_dag()
 
 
 
+
+"""get_object()
+
+When you call:
+
+processed_obj = s3.get_object(
+    Bucket=bucket,
+    Key="_processed/processed_keys.json"
+)
+
+the get_object() method returns a Python dictionary.
+It looks something like this:
+
+processed_obj = {
+    "Body": <StreamingBody object>,
+    "ContentLength": 85,
+    "ContentType": "application/json",
+    "LastModified": "...",
+    "ETag": "...",
+    ...
+}
+
+Notice that you did not create this dictionary.
+The S3 API created it, and boto3 converted the API response into a Python dictionary.
+
+What is StreamingBody?
+
+Think of it like this:
+processed_obj (Python dict)
+│
+├── "Body"
+│      │
+│      ▼
+│   StreamingBody Object  ──── > .read()  Actual file contents (bytes)
+│
+├── "ContentLength"
+│
+└── "ContentType"
+
+The file contents are inside that StreamingBody object.
+
+    
+What does .read() do?
+.read() reads the bytes from the stream. It does not convert them to bytes—they are already bytes.
+
+output looks like this:
+b'["AAPL/1719234567.json","MSFT/1719235000.json"]' """
+
+     """   YOUR CODE
+                    │
+                    ▼
+      s3.get_object(Bucket, Key)
+                    │
+                    ▼
+             boto3 Library
+                    │
+         Converts Python call
+          into HTTP request
+                    │
+                    ▼
+                MinIO Server
+                    │
+          Finds the object
+                    │
+                    ▼
+           Sends HTTP response
+                    │
+      (NOT a Python dictionary)
+                    │
+                    ▼
+             boto3 receives it
+                    │
+   Creates a Python dictionary
+                    │
+                    ▼
+processed_obj = {
+    "Body": StreamingBodyObject,
+    "ContentLength": 78,
+    "ContentType": "application/json"
+}
+                    │
+                    ▼
+processed_obj["Body"]
+                    │
+                    ▼
+StreamingBodyObject
+                    │
+         .read()
+                    │
+                    ▼
+Bytes
+                    │
+        json.loads()
+                    │
+                    ▼
+Python List """
+
+
+
+
+    
+    
+
+
+"""Later your DAG asks MinIO
+objects = s3.list_objects_v2(Bucket=BUCKET) #This method belongs to boto3. Internally boto3 sends a request to MinIO.
+
+#What MinIO replies
+
+This is the important part.
+MinIO does NOT reply like this:
+
+[
+"AAPL/1719234567.json"
+]
+
+
+Instead it replies with a big dictionary.
+Something similar to
+
+{
+    "Name": "bronze-transactions",
+
+    "Contents": [
+
+        {
+            "Key": "AAPL/1719234567.json",
+            "Size": 253,
+            "LastModified": "...",
+        },
+
+        {
+            "Key": "MSFT/1719234599.json",
+            "Size": 249,
+            "LastModified": "...",
+        }
+
+    ]
+}
+
+
+
+
+"""Question 3: What else work happening AFTER converting to Python list?
+This is the most important one! We convert to Python list for 3 specific operations:
+
+# Operation 1 — CHECKING (is this file already processed?)
+if "AAPL/123.json" not in processed_files
+#                         ↑
+#                   only works on Python list
+#                   CANNOT do this on JSON string!
+
+# Operation 2 — ADDING new files to diary
+processed_files.extend(new_files)
+#              ↑
+#        only works on Python list
+#        CANNOT do this on JSON string!
+
+# Operation 3 — COUNTING for logger
+len(processed_files)
+#   ↑
+#   only works on Python list
+#   CANNOT do this on JSON string!
+
+
+
+
+
 # Full response dictionary boto3 returns:
 # {
 #     "Name": "bronze-transactions",      # bucket name
@@ -372,7 +604,10 @@ minio_to_snowflake_dag()
 # response.get("IsTruncated")  # → False
 # response.get("Contents")     # → list of files  ← what we use
 
-#"Library returns an Object → Object carries methods → Variable holds that Object → Variable can use those methods"
+
+
+
+#"Library returns an Object → Object carries methods → Variable holds that Object → Variable can use those methods"""
 
 
 
