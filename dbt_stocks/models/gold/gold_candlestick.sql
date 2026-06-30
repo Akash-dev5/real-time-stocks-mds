@@ -17,6 +17,58 @@ with enriched as (
     from {{ ref('silver_clean_stock_quotes') }}
 ),
 
+""" Q1) FIRST_VALUE(current_price)
+    
+Looks at the first row  09:15 → 100
+So every row receives  100
+
+Result
+Time	Price	candle_open
+09:15	100	    100
+09:30	103     100
+10:00	108	    100
+
+
+Q2) LAST_VALUE(current_price)   
+This does the opposite.
+It returns the last price of the day.
+    
+Look at the last row   10:00	108
+So every row receives 108
+
+So the output becomes
+Time	Price	candle_close
+09:15	100  	108
+09:30	103  	108
+10:00	108  	108
+    
+
+    
+Q3) Why do we need?
+ROWS BETWEEN UNBOUNDED PRECEDING
+         AND UNBOUNDED FOLLOWING
+
+This is important.
+By default, LAST_VALUE() only looks up to the current row, not the entire partition.
+
+Without this clause:
+Time	Price	LAST_VALUE
+09:15	100	    100
+09:30	103  	103
+10:00	108  	108
+It would just return the current row's price.
+
+Adding: ROWS BETWEEN UNBOUNDED PRECEDING
+         AND UNBOUNDED FOLLOWING
+
+tells SQL: Consider the entire partition (all rows for this symbol on this day), from the first row to the last row.
+
+Now it correctly returns the day's closing price for every row:
+Time	Price	candle_close
+09:15	100	    108
+09:30	103     108
+10:00	108	    108"""
+
 candles as (
     select
         symbol,
