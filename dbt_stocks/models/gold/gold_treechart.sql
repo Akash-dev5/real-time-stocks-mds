@@ -140,7 +140,7 @@ all_time_volatility AS (
     STDDEV_POP(current_price_dbl) AS volatility,             
     CASE
       WHEN AVG(current_price_dbl) = 0 THEN NULL
-      ELSE STDDEV_POP(current_price_dbl) / NULLIF(AVG(current_price_dbl), 0)
+      ELSE STDDEV_POP(current_price_dbl) / NULLIF(AVG(current_price_dbl), 0)  """standard deviation / average price"""
     END AS relative_volatility
   FROM source
   GROUP BY symbol
