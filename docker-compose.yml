@@ -4,10 +4,16 @@ services:
     image: confluentinc/cp-zookeeper:7.4.1
     container_name: zookeeper
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_CLIENT_PORT: 2181  # tells Zookeeper SOFTWARE which port to USE       
+      ZOOKEEPER_TICK_TIME: 2000 #Zookeeper should send a heartbeat every 2000 milliseconds" (2000 milliseconds = 2 seconds)
     ports:
-      - "2181:2181"
+      - "2181:2181"     # tells Docker which port to EXPOSE
+
+# ZOOKEEPER_TICK_TIME:
+# Monitors  → checks every brokers are active or not
+# Detects   → who crashed?
+# Recovers  → redistributes work to healthy brokers
+      
 
   kafka:
     image: confluentinc/cp-kafka:7.4.1
@@ -15,10 +21,10 @@ services:
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"   # internal Docker network
-      - "29092:29092" # external host machine
-    environment:
-      KAFKA_BROKER_ID: 1
+      - "9092:9092" # internal Docker network # kafdrop is using this port 9092 to access kafka inside docker
+      - "29092:29092" # external host machine #e.g.(producer.py)bootstrap_servers=["host.docker.internal:29092"]
+    environment:                                                                    # ↑
+      KAFKA_BROKER_ID: 1                                       #your machine → Docker (only works from OUTSIDE Docker)
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://host.docker.internal:29092
@@ -28,7 +34,24 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
 
+# PLAINTEXT      :  PLAINTEXT
+#     ↑                 ↑
+# listener name    security protocol
+# (your custom)    (no encryption)
 
+# PLAINTEXT_HOST :  PLAINTEXT
+#     ↑                 ↑
+# listener name    security protocol
+# (your custom)    (no encryption)
+
+
+# PLAINTEXT is the security protocol — it means:
+# PLAINTEXT    → no encryption, data sent as raw text
+# SSL          → encrypted connection (like https)
+# SASL         → with authentication/password protection
+
+# PLAINTEXT://  → just like http://  (no security)
+# SSL://        → just like https:// (with security)
 
   kafdrop:
     image: obsidiandynamics/kafdrop:latest
@@ -45,11 +68,28 @@ services:
     container_name: minio
     ports:
       - "9001:9001"  # Console UI
-      - "9002:9000"  # S3 API
+      - "9002:9000"  # S3 API    #consumer.py talks to MinIO via port 9000
     environment:
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: password123
     command: server /data --console-address ":9001"
+
+# consumer.py
+# s3 = boto3.client("s3", endpoint_url="http://localhost:9000")
+# s3.put_object(...)       # WRITES files to MinIO
+
+# # DAG file
+# s3 = boto3.client("s3", endpoint_url="http://minio:9000")
+# s3.list_objects_v2(...)  # READS file names from MinIO
+# s3.get_object(...)       # READS file content from MinIO
+
+
+# command: server /data --console-address ":9001"
+# #          ↑     ↑           ↑              ↑
+# #        start  where      enable         on this
+# #        MinIO  to store   the web UI     port
+# #        server all files
+
 
   airflow-webserver:
     image: apache/airflow:2.9.3
@@ -61,6 +101,7 @@ services:
     environment:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      #this line tells Airflow exactly where and how to connect to Postgres!
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -68,6 +109,19 @@ services:
     ports:
       - "8080:8080"
     command: webserver
+
+# Let me break this URL into pieces:
+# postgresql+psycopg2  :  //  airflow  :  airflow  @  postgres  :  5432  /  airflow
+#       ↑                      ↑            ↑           ↑           ↑         ↑
+#  how to connect (using     username      password    hostname     port     database
+#  psycopg2 python library)                         (service name)           name
+
+# postgresql → database type
+# psycopg2 → Python library that connects to Postgres
+# airflow:airflow → username:password (defined in Postgres service)
+# @postgres → hostname — the Postgres service name in Docker
+# :5432 → Postgres default port
+# /airflow → which database to use inside Postgres
 
   airflow-scheduler:
     image: apache/airflow:2.9.3
@@ -84,6 +138,25 @@ services:
       - ./plugins:/opt/airflow/plugins
     command: scheduler
 
+# Real example:
+# If your project is saved at C:/projects/myproject/ on your PC:
+# YOUR PC:                          INSIDE CONTAINER:
+# ─────────────────                 ─────────────────────────
+# C:/projects/myproject/dags   ←──→  /opt/airflow/dags
+# So when you:
+# Save a DAG file here:
+# C:/projects/myproject/dags/minio_to_snowflake_dag.py
+
+# Airflow instantly sees it here:
+# /opt/airflow/dags/minio_to_snowflake_dag.py
+
+# ./    →  current folder (where docker-compose.yml lives)
+# ./dags    →  dags folder inside current folder
+# ./logs    →  logs folder inside current folder
+
+#YOUR machine : CONTAINER
+
+
   postgres:
     image: postgres:15
     container_name: airflow-postgres
@@ -97,7 +170,124 @@ services:
     ports:
       - "5432:5432"
 
+# postgres_data : /var/lib/postgresql/data
+#       ↑                    ↑
+#  Host Volume         Container Folder
+
+
+# What is /var/lib/postgresql/data?
+# This is the folder inside the PostgreSQL container where PostgreSQL stores:
+# Databases
+# Tables
+# Rows
+# Indexes
+# Users
+# Passwords
+
+# Think of it as PostgreSQL's hard drive.
+
+# #Without volume, new database = employess, later, docker compose down, docker compose up, without volume
+# all the data is gone.
+# #with Volume, Now you have
+
+# postgres_data:/var/lib/postgresql/data
+
+# PostgreSQL still writes to
+
+# /var/lib/postgresql/data
+
+# But Docker actually stores those files in the named volume:
+# postgres_data
+ 
 volumes:
   postgres_data:
 
+# Same concept as Python:
+# Declare first,    local_files = []
 
+# # Then use it,    local_files.append(file)
+
+# volumes:
+#   postgres_data:
+
+# # Then use it
+# - postgres_data:/var/lib/postgresql/data
+
+# # Bind mount — NO declaration needed at bottom
+# - ./dags:/opt/airflow/dags    # ./ means real folder on your machine
+#                                # Docker can find it directly
+
+# # Named volume — Must declare at bottom so Docker knows to create it
+# - postgres_data:/var/lib/postgresql/data   #Docker creates and manages it
+                                           
+
+
+
+
+
+
+# KAFKA_INTER_BROKER_LISTENER_NAME
+
+# KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+# When you have multiple Kafka brokers — they need to talk to each other. This tells them which listener to use for that:
+# Broker 1  ──PLAINTEXT──►  Broker 2
+# Broker 2  ──PLAINTEXT──►  Broker 3
+# In your setup you only have 1 broker — so this just says:
+# "If I ever talk to other brokers → use PLAINTEXT listener"
+
+
+# KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+# First understand what offsets topic is:
+# Kafka tracks WHERE each consumer stopped reading
+# This tracking is stored in a special topic called:  __consumer_offsets
+# Example:
+#     consumer read up to message 150
+#     Kafka stores "consumer1 is at offset 150"
+#     consumer restarts → continues from 150, not from beginning
+# REPLICATION_FACTOR: 1 means:
+# Store this tracking info on 1 broker only (no copies)
+
+# In production:
+# REPLICATION_FACTOR: 3  → stored on 3 brokers
+#                           if 1 broker dies → 2 others still have the info!
+
+# In your local setup:
+# REPLICATION_FACTOR: 1  → only 1 broker exists anyway
+#                           so 1 is enough!
+
+
+# KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+# Similar to above — but for transactions:
+# Kafka can group multiple messages into one transaction
+# (like database transactions — all succeed or all fail)
+
+# Transaction state is stored in:  __transaction_state topic
+
+# REPLICATION_FACTOR: 1  → store on 1 broker
+#                           fine for local setup
+#                           production would use 3
+
+
+# KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+# ISR means In Sync Replicas — brokers that have an up to date copy of the data:
+# MIN_ISR: 1  → minimum 1 broker must be in sync
+#                before Kafka confirms a write succeeded
+
+# Production:
+# MIN_ISR: 2  → at least 2 brokers must confirm
+#                more reliable but slower
+
+# Local setup:
+# MIN_ISR: 1  → only 1 broker exists anyway
+#                so 1 is the only option!
+
+
+# Production setup:           Your local setup:
+# ───────────────             ────────────────
+# 3 Kafka brokers             1 Kafka broker
+# REPLICATION: 3              REPLICATION: 1
+# MIN_ISR: 2                  MIN_ISR: 1
+
+# If 1 broker dies →          Only 1 broker →
+# 2 others take over          no redundancy needed
+# data safe!                  it's just for learning!
