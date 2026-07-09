@@ -29,7 +29,7 @@ Time	Price	candle_open
 10:00	108	    100
 
 
-Q2) LAST_VALUE(current_price)   
+Q2) A. LAST_VALUE(current_price)   
 This does the opposite.
 It returns the last price of the day.
     
@@ -44,7 +44,7 @@ Time	Price	candle_close
     
 
     
-Q3) Why do we need?
+B. Why do we need?
 ROWS BETWEEN UNBOUNDED PRECEDING
          AND UNBOUNDED FOLLOWING
 
